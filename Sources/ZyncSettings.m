@@ -448,6 +448,20 @@ static void ZyncReloadTable(id vc) {
     if (tv) [tv reloadData];
 }
 
+static UITableView *ZyncTableViewForVC(id vc) {
+    if (!vc) return nil;
+    UITableView *tv = nil;
+    if ([vc isKindOfClass:[UITableViewController class]]) {
+        tv = [(UITableViewController *)vc tableView];
+    } else if ([vc isKindOfClass:[UIViewController class]]) {
+        NSArray *subviews = [[(UIViewController *)vc view] subviews];
+        for (UIView *view in subviews) {
+            if ([view isKindOfClass:[UITableView class]]) { tv = (UITableView *)view; break; }
+        }
+    }
+    return tv;
+}
+
 static BOOL ZyncTableReady(id vc) {
     UITableView *tv = nil;
     if ([vc isKindOfClass:[UITableViewController class]]) {
@@ -509,15 +523,27 @@ static void ZyncEnsureRow(id vc) {
     BOOL injected = NO;
     @try { injected = ZyncInjectRow(vc); } @catch (__unused NSException *e) { injected = NO; }
     if (injected) {
+        // Per-VC retry count (associated object) resets on primary success;
+        // the global attempt counter remains a backstop only and never gates
+        // fallback on its own (see below).
         objc_setAssociatedObject(vc, &ZyncRetryCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         ZyncReloadTable(vc);
     } else {
         NSNumber *doneNum = objc_getAssociatedObject(vc, &ZyncRetryCountKey);
         NSInteger tries = doneNum ? doneNum.integerValue : 0;
-        if (ZyncTableReady(vc) && ((gInjectAttempts >= 4 && tries >= 1) || gInjectAttempts >= 10)) {
+        UITableView *tableView = ZyncTableViewForVC(vc);
+        BOOL hasTableView = tableView != nil;
+        BOOL tableReady = ZyncTableReady(vc);
+        ZYNC_LOG(@"ensure: primary inject failed (attempts=%lu perVCtries=%ld hasTableView=%d tableReady=%d)",
+                 (unsigned long)gInjectAttempts, (long)tries, hasTableView, tableReady);
+        // Deterministic fallback: two primary failures in a row with a
+        // non-nil tableView show the fallback immediately. tableReady alone
+        // never blocks fallback (a buggy ready check is a suspected
+        // blocker) — once per-VC retries are exhausted, fall back anyway.
+        if ((tries >= 1 && hasTableView) || tries >= 2 || gInjectAttempts >= 10) {
             gFallbackActive = YES;
-            ZYNC_LOG(@"ensure: primary exhausted after %lu attempts — fallback row active",
-                     (unsigned long)gInjectAttempts);
+            ZYNC_LOG(@"ensure: primary exhausted after %lu attempts (perVCtries=%ld hasTableView=%d tableReady=%d) — fallback row active",
+                     (unsigned long)gInjectAttempts, (long)tries, hasTableView, tableReady);
             ZyncReloadTable(vc);
         } else {
             ZyncScheduleRetry(vc);
@@ -596,6 +622,9 @@ typedef id (*ZyncObj2)(id, SEL, id, id);
 
 void ZyncSettingsInstall(void) {
     gSettingsClass = NSClassFromString(@"SettingUI40TableViewController");
+    BOOL settingsClassFound = gSettingsClass != Nil;
+    ZYNC_LOG(@"settings hub class SettingUI40TableViewController found=%d (%@)",
+             settingsClassFound, gSettingsClass ? NSStringFromClass(gSettingsClass) : @"<nil>");
     if (!gSettingsClass) {
         ZYNC_LOG(@"settings hub class not found — settings integration idle");
         return;
@@ -603,37 +632,42 @@ void ZyncSettingsInstall(void) {
 
     SEL viewDidLoadSel = sel_registerName("viewDidLoad");
     IMP viewDidLoadOrig = class_getMethodImplementation(gSettingsClass, viewDidLoadSel);
-    ZyncReplaceMethod(gSettingsClass, viewDidLoadSel, 0, "v", ^(id self) {
+    BOOL okViewDidLoad = ZyncReplaceMethod(gSettingsClass, viewDidLoadSel, 0, "v", ^(id self) {
         ((ZyncV0)viewDidLoadOrig)(self, viewDidLoadSel);
         dispatch_async(dispatch_get_main_queue(), ^{ ZyncEnsureRow(self); });
     });
+    ZYNC_LOG(@"settings hook viewDidLoad validated=%d", okViewDidLoad);
 
     SEL willAppearSel = sel_registerName("viewWillAppear:");
     IMP willAppearOrig = class_getMethodImplementation(gSettingsClass, willAppearSel);
-    ZyncReplaceMethod(gSettingsClass, willAppearSel, 1, "v", ^(id self, BOOL animated) {
+    BOOL okViewWillAppear = ZyncReplaceMethod(gSettingsClass, willAppearSel, 1, "v", ^(id self, BOOL animated) {
         ((ZyncV1Bool)willAppearOrig)(self, willAppearSel, animated);
         ZyncEnsureRow(self);
     });
+    ZYNC_LOG(@"settings hook viewWillAppear: validated=%d", okViewWillAppear);
 
     SEL didAppearSel = sel_registerName("viewDidAppear:");
     IMP didAppearOrig = class_getMethodImplementation(gSettingsClass, didAppearSel);
-    ZyncReplaceMethod(gSettingsClass, didAppearSel, 1, "v", ^(id self, BOOL animated) {
+    BOOL okViewDidAppear = ZyncReplaceMethod(gSettingsClass, didAppearSel, 1, "v", ^(id self, BOOL animated) {
         ((ZyncV1Bool)didAppearOrig)(self, didAppearSel, animated);
         dispatch_async(dispatch_get_main_queue(), ^{ ZyncEnsureRow(self); });
     });
+    ZYNC_LOG(@"settings hook viewDidAppear: validated=%d", okViewDidAppear);
 
     SEL updateTitleSel = sel_registerName("updateTitleObjects");
+    BOOL okUpdateTitle = NO;
     if (ZyncClassHasInstanceMethod(gSettingsClass, updateTitleSel)) {
         IMP updateTitleOrig = class_getMethodImplementation(gSettingsClass, updateTitleSel);
-        ZyncReplaceMethod(gSettingsClass, updateTitleSel, 0, "v", ^(id self) {
+        okUpdateTitle = ZyncReplaceMethod(gSettingsClass, updateTitleSel, 0, "v", ^(id self) {
             ((ZyncV0)updateTitleOrig)(self, updateTitleSel);
             dispatch_async(dispatch_get_main_queue(), ^{ ZyncEnsureRow(self); });
         });
     }
+    ZYNC_LOG(@"settings hook updateTitleObjects validated=%d", okUpdateTitle);
 
     SEL didSelectSel = sel_registerName("tableView:didSelectRowAtIndexPath:");
     IMP didSelectOrig = class_getMethodImplementation(gSettingsClass, didSelectSel);
-    ZyncReplaceMethod(gSettingsClass, didSelectSel, 2, "v", ^(id self, UITableView *tv, NSIndexPath *indexPath) {
+    BOOL okDidSelect = ZyncReplaceMethod(gSettingsClass, didSelectSel, 2, "v", ^(id self, UITableView *tv, NSIndexPath *indexPath) {
         if (ZyncHandleSelection(self, indexPath, tv)) return;
         NSIndexPath *forward = indexPath;
         if (gFallbackActive && !gOurRow && indexPath.section == 0 && indexPath.row > 0) {
@@ -641,21 +675,25 @@ void ZyncSettingsInstall(void) {
         }
         ((ZyncV2)didSelectOrig)(self, didSelectSel, tv, forward);
     });
+    ZYNC_LOG(@"settings hook didSelect validated=%d (tableView:didSelectRowAtIndexPath:)", okDidSelect);
 
     SEL rowsSel = sel_registerName("tableView:numberOfRowsInSection:");
+    BOOL okNumberOfRows = NO;
     if (ZyncClassHasInstanceMethod(gSettingsClass, rowsSel)) {
         IMP rowsOrig = class_getMethodImplementation(gSettingsClass, rowsSel);
-        ZyncReplaceMethod(gSettingsClass, rowsSel, 2, "q", ^NSInteger(id self, UITableView *tv, NSInteger section) {
+        okNumberOfRows = ZyncReplaceMethod(gSettingsClass, rowsSel, 2, "q", ^NSInteger(id self, UITableView *tv, NSInteger section) {
             NSInteger rows = ((ZyncQ2)rowsOrig)(self, rowsSel, tv, section);
             if (gFallbackActive && !gOurRow && section == 0) rows += 1;
             return rows;
         });
     }
+    ZYNC_LOG(@"settings hook numberOfRows validated=%d (tableView:numberOfRowsInSection:)", okNumberOfRows);
 
     SEL cellSel = sel_registerName("tableView:cellForRowAtIndexPath:");
+    BOOL okCellForRow = NO;
     if (ZyncClassHasInstanceMethod(gSettingsClass, cellSel)) {
         IMP cellOrig = class_getMethodImplementation(gSettingsClass, cellSel);
-        ZyncReplaceMethod(gSettingsClass, cellSel, 2, "@", ^id(id self, UITableView *tv, NSIndexPath *indexPath) {
+        okCellForRow = ZyncReplaceMethod(gSettingsClass, cellSel, 2, "@", ^id(id self, UITableView *tv, NSIndexPath *indexPath) {
             if (gFallbackActive && !gOurRow && indexPath.section == 0) {
                 if (indexPath.row == 0) return ZyncBuildFallbackCell(tv, indexPath);
                 NSIndexPath *forward = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:indexPath.section];
@@ -664,6 +702,9 @@ void ZyncSettingsInstall(void) {
             return ((ZyncObj2)cellOrig)(self, cellSel, tv, indexPath);
         });
     }
+    ZYNC_LOG(@"settings hook cellForRow validated=%d (tableView:cellForRowAtIndexPath:)", okCellForRow);
+    ZYNC_LOG(@"settings hooks summary viewDidAppear:=%d viewWillAppear:=%d updateTitleObjects=%d cellForRow=%d numberOfRows=%d didSelect=%d",
+             okViewDidAppear, okViewWillAppear, okUpdateTitle, okCellForRow, okNumberOfRows, okDidSelect);
 
     // Late install: Settings may already be on screen before hooks land.
     // Scan the key window once (main queue) so the visible instance still

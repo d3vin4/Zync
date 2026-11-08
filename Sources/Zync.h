@@ -9,10 +9,17 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-#define ZYNC_VERSION @"3.0"
-#define ZYNC_BUILD   @"Build 3"
+#define ZYNC_VERSION @"4.0"
+#define ZYNC_BUILD   @"Build 4"
 
-#define ZYNC_LOG(fmt, ...) NSLog(@"[Zync] " fmt, ##__VA_ARGS__)
+/** Appends a formatted line to <Documents>/Zync.log and the App Group log (tmp fallback). Implemented in ZyncCore.m. */
+void ZyncFileLog(NSString *format, ...);
+
+#define ZYNC_LOG(fmt, ...) do { \
+    NSString *_zyncMessage = [NSString stringWithFormat:fmt, ##__VA_ARGS__]; \
+    NSLog(@"[Zync] %@", _zyncMessage); \
+    ZyncFileLog(@"[Zync] %@", _zyncMessage); \
+} while (0)
 
 extern NSString *const ZyncPrefsDidChangeNotification;
 
