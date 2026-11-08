@@ -1,0 +1,79 @@
+name: Zync CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-26
+    env:
+      ZYNC_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26 toolchain
+        run: |
+          echo "Available Xcode:"
+          ls /Applications | grep -i xcode || true
+          XC=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC"; fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: Build libZync.dylib
+        run: make
+
+      - name: Verification gates
+        run: ./Scripts/gates.sh build/libZync.dylib
+
+      - name: Metadata + reports
+        run: ./Scripts/report.sh build/libZync.dylib build
+
+      - name: Package artifacts
+        run: |
+          cd build
+          cp ../README.md README.md 2>/dev/null || true
+          zip -9 "Zync-${ZYNC_VERSION}.zip" \
+            libZync.dylib libZync.dylib.sha256 libZync.nm.txt libZync.otool-L.txt \
+            libZync.file.txt IMPLEMENTATION-REPORT.md COMPATIBILITY-REPORT.md README.md
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zync-${{ env.ZYNC_VERSION }}
+          path: |
+            build/libZync.dylib
+            build/*.sha256
+            build/*-REPORT.md
+            build/Zync-*.zip
+
+      - name: Publish pre-release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          name: Zync ${{ github.ref_name }}
+          body: |
+            Zync ${{ github.ref_name }} — Zalo native customization dylib.
+
+            - Target: Zalo 26.11.01 (vn.com.vng.zingalo), arm64, iOS 15.1+
+            - Modules: ZyncCore, ZyncUI, ZyncSettings, ZyncGlass, ZyncPrivacy,
+              ZyncAds, ZyncFeatures, ZyncPreferences, ZyncCompatibility
+            - Verification gates passed: arm64, deps clean (no substrate),
+              install_name, minos 15.1, UIGlassEffect runtime-guarded, codesigned
+            - See IMPLEMENTATION-REPORT.md and COMPATIBILITY-REPORT.md
+
+            Not ported by design (no usable iOS mechanism / server-authoritative):
+            ZCloud premium unlock, group admin/owner spoofing, chat-head overlay.
+          files: |
+            build/Zync-*.zip
+            build/libZync.dylib
+            build/libZync.dylib.sha256
+            build/IMPLEMENTATION-REPORT.md
+            build/COMPATIBILITY-REPORT.md

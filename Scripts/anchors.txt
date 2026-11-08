@@ -1,0 +1,56 @@
+# Zync anchor manifest — every host symbol Zync references at runtime.
+# Format: kind<TAB>anchor
+#   sel = ObjC selector (must exist in __objc_methname)
+#   cls = ObjC class (must exist in __objc_classlist)
+#   key = preference/config key string (must exist in binary strings)
+#   url = URL fragment (must exist in binary strings)
+# Verify with: ZYNC_IPA_DUMP=<dir> ./Scripts/anchors-verify.sh
+sel	sendStatusTyping:withCommand:withSubCommand:withDestType:withGlobalMessageId:
+sel	sendSeenMessageWithChatEntity:
+sel	sendSeenMessageWithTalkTableItem:
+sel	sendSeenMessages:messageDict:incomingData:
+sel	_sendSeenMessageWithSeenData:messageType:
+sel	sendSeenServer
+sel	sendSeenServerPARQueue
+sel	forceSendSeenServer
+sel	sendSeenLastMessageWithThreadIds:withMessageType:
+sel	sendSeenChatACK:withSubCommandType:
+sel	sendSeenGroupChatACKByData:withSubCommandType:
+sel	sendSeenCurrentUnreadFriendRequest:sourceView:
+sel	sendSeenCurrentUnreadFriendRequest:retryTime:sourceView:
+sel	enableProfileMusic
+sel	enableProfileMusicRBT
+sel	enableShareProfileMusic
+sel	newFlagEnableProfileMusic
+sel	setEnableProfileMusicLocal:
+sel	_basicBackupGDriveSectionZInstantData
+sel	__basicBackupGDriveSectionZInstantData
+sel	getArrangedTableContent
+sel	updateTitleObjects
+sel	accountAndSecurityObject
+sel	viewDidAppear:
+sel	viewDidLayoutSubviews
+cls	SettingUI40TableViewController
+cls	BasicSettingUI40TableViewController
+cls	AccountSettingUI40ViewController
+cls	ZaloTabBarViewController
+cls	ZLExtendedProfileMusic
+cls	ProfileMusicItemModel
+cls	ZInstantFeedAdsView
+cls	LocationOAAdsCell
+key	kProfileMusicSetting
+key	profile_music
+key	features@profile_music
+key	enable_rbt
+key	restore_gdrive_photo_csc
+key	enable_tabmore
+key	tabme.section_items.account_security.title
+key	00Zh8W
+url	log.api.zaloapp.com
+url	/tracking-v3
+url	ads.platform.zalo.me
+url	/zpads/
+url	/get/ads
+url	/ads_out_stream
+url	/ads_boost
+url	/v1/ads/
