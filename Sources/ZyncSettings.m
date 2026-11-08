@@ -31,6 +31,30 @@ static NSArray<NSString *> *ZyncKnownAccountTitleValues(void) {
              @"tabme_account_security"];
 }
 
+static void ZyncEnsureRow(id vc);
+static char ZyncRetryCountKey;
+static const NSUInteger kZyncMaxBFNodes = 4000;
+
+// class_copyIvarList only returns ivars declared on the exact class — model,
+// cell and category state in Zalo lives on superclasses (e.g. model/actions
+// on BasicSettingTableViewController, title on BasicSettingCellV2Object
+// parents). Walk the full chain so discovery, cloning and retitling all see
+// inherited state.
+static NSArray<NSValue *> *ZyncAllIvars(Class cls) {
+    NSMutableArray<NSValue *> *list = [NSMutableArray array];
+    Class current = cls;
+    while (current && current != [NSObject class]) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(current, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            [list addObject:[NSValue valueWithPointer:(void *)ivars[i]]];
+        }
+        free(ivars);
+        current = class_getSuperclass(current);
+    }
+    return list;
+}
+
 #pragma mark - Object cloning
 
 // object_setIvar does not retain; ARC-managed ivars will release on dealloc.
@@ -45,10 +69,11 @@ static id ZyncCloneCellObject(id source) {
     Class cls = object_getClass(source);
     if (!cls) return nil;
 
+    // NSObject's default copyWithZone: returns self — only a real copy helps.
     if ([source respondsToSelector:@selector(copyWithZone:)]) {
         @try {
             id copy = [source copy];
-            if (copy && object_getClass(copy) == cls) return copy;
+            if (copy && copy != source && object_getClass(copy) == cls) return copy;
         } @catch (__unused NSException *e) {}
     }
 
@@ -56,10 +81,8 @@ static id ZyncCloneCellObject(id source) {
     @try { clone = [[cls alloc] init]; } @catch (__unused NSException *e) { return nil; }
     if (!clone) return nil;
 
-    unsigned int count = 0;
-    Ivar *ivars = class_copyIvarList(cls, &count);
-    for (unsigned int i = 0; i < count; i++) {
-        Ivar ivar = ivars[i];
+    for (NSValue *boxed in ZyncAllIvars(cls)) {
+        Ivar ivar = (Ivar)boxed.pointerValue;
         const char *type = ivar_getTypeEncoding(ivar);
         if (!type || type[0] == '\0') continue;
         if (type[0] == '@') {
@@ -77,7 +100,6 @@ static id ZyncCloneCellObject(id source) {
             }
         }
     }
-    free(ivars);
     return clone;
 }
 
@@ -85,11 +107,10 @@ static BOOL ZyncRetitleCellObject(id object, NSString *newTitle, NSString **outO
     if (!object) return NO;
     NSArray<NSString *> *known = ZyncKnownAccountTitleValues();
     Class cls = object_getClass(object);
-    unsigned int count = 0;
-    Ivar *ivars = class_copyIvarList(cls, &count);
     BOOL done = NO;
-    for (unsigned int i = 0; i < count && !done; i++) {
-        Ivar ivar = ivars[i];
+    for (NSValue *boxed in ZyncAllIvars(cls)) {
+        if (done) break;
+        Ivar ivar = (Ivar)boxed.pointerValue;
         const char *type = ivar_getTypeEncoding(ivar);
         if (!type || type[0] != '@') continue;
         id value = nil;
@@ -101,7 +122,6 @@ static BOOL ZyncRetitleCellObject(id object, NSString *newTitle, NSString **outO
             done = YES;
         }
     }
-    free(ivars);
 
     if (!done) {
         for (NSString *key in @[@"title", @"name", @"text", @"cellTitle", @"localizedTitle"]) {
@@ -137,7 +157,8 @@ static BOOL ZyncSkipTraversalClass(id node) {
     return [node isKindOfClass:[NSString class]] || [node isKindOfClass:[NSNumber class]] ||
            [node isKindOfClass:[NSData class]] || [node isKindOfClass:[NSDate class]] ||
            [node isKindOfClass:[NSURL class]] || [node isKindOfClass:[NSSet class]] ||
-           [node isKindOfClass:[NSValue class]] || [node isKindOfClass:[NSNull class]];
+           [node isKindOfClass:[NSValue class]] || [node isKindOfClass:[NSNull class]] ||
+           [node isKindOfClass:[UIView class]] || [node isKindOfClass:[UIViewController class]];
 }
 
 static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger maxDepth) {
@@ -150,7 +171,7 @@ static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger 
     [queue addObject:rootNode];
 
     NSUInteger depth = 0;
-    while (queue.count > 0 && depth < maxDepth) {
+    while (queue.count > 0 && depth < maxDepth && all.count < kZyncMaxBFNodes) {
         NSMutableArray<ZyncBFSNode *> *next = [NSMutableArray array];
         for (ZyncBFSNode *entry in queue) {
             id node = entry.node;
@@ -185,22 +206,20 @@ static NSMutableArray<ZyncBFSNode *> *ZyncCollectCandidates(id root, NSUInteger 
                     [next addObject:n];
                 }
             } else {
-                unsigned int count = 0;
-                Ivar *ivars = class_copyIvarList(object_getClass(node), &count);
-                for (unsigned int i = 0; i < count; i++) {
-                    const char *type = ivar_getTypeEncoding(ivars[i]);
+                for (NSValue *boxed in ZyncAllIvars(object_getClass(node))) {
+                    Ivar ivar = (Ivar)boxed.pointerValue;
+                    const char *type = ivar_getTypeEncoding(ivar);
                     if (!type || type[0] != '@') continue;
                     id child = nil;
-                    @try { child = object_getIvar(node, ivars[i]); } @catch (__unused NSException *e) { continue; }
+                    @try { child = object_getIvar(node, ivar); } @catch (__unused NSException *e) { continue; }
                     if (!child || ZyncSkipTraversalClass(child)) continue;
                     ZyncBFSNode *n = [ZyncBFSNode new];
                     n.node = child;
                     n.parent = node;
                     n.parentEntry = entry;
-                    n.parentIvar = ivars[i];
+                    n.parentIvar = ivar;
                     [next addObject:n];
                 }
-                free(ivars);
             }
         }
         [queue setArray:next];
@@ -263,7 +282,7 @@ static NSMutableArray *ZyncMakeMutableChain(ZyncBFSNode *match) {
 }
 
 static NSMutableArray *ZyncFindContainerForObject(id root, id target, NSUInteger *outIndex) {
-    NSMutableArray<ZyncBFSNode *> *nodes = ZyncCollectCandidates(root, 5);
+    NSMutableArray<ZyncBFSNode *> *nodes = ZyncCollectCandidates(root, 7);
     for (ZyncBFSNode *entry in nodes) {
         id node = entry.node;
         if (![node isKindOfClass:[NSArray class]]) continue;
@@ -272,37 +291,66 @@ static NSMutableArray *ZyncFindContainerForObject(id root, id target, NSUInteger
         NSMutableArray *container = ZyncMakeMutableChain(entry);
         if (!container) continue;
         if (outIndex) *outIndex = [container indexOfObjectIdenticalTo:target];
+        ZYNC_LOG(@"ensure: container found via ivar graph");
         return container;
     }
+
+    // Stage 2: arranged content may come from a getter (getArrangedTableContent),
+    // not a stored ivar. Only mutate when a containing array is reachable and
+    // mutable-ized via the existing chain logic — a throwaway copy is ignored.
+    SEL arrangedSel = sel_registerName("getArrangedTableContent");
+    if (root && [root respondsToSelector:arrangedSel]) {
+        id arranged = nil;
+        @try { arranged = [root performSelector:arrangedSel]; } @catch (__unused NSException *e) {}
+        if (arranged && arranged != root) {
+            if ([arranged isKindOfClass:[NSMutableArray class]] &&
+                [arranged indexOfObjectIdenticalTo:target] != NSNotFound) {
+                if (outIndex) *outIndex = [arranged indexOfObjectIdenticalTo:target];
+                ZYNC_LOG(@"ensure: container via getArrangedTableContent (mutable root)");
+                return arranged;
+            }
+            NSMutableArray<ZyncBFSNode *> *subNodes = ZyncCollectCandidates(arranged, 4);
+            for (ZyncBFSNode *entry in subNodes) {
+                id node = entry.node;
+                if (![node isKindOfClass:[NSArray class]]) continue;
+                if ([node indexOfObjectIdenticalTo:target] == NSNotFound) continue;
+                NSMutableArray *container = ZyncMakeMutableChain(entry);
+                if (!container) continue;
+                if (outIndex) *outIndex = [container indexOfObjectIdenticalTo:target];
+                ZYNC_LOG(@"ensure: container via getArrangedTableContent");
+                return container;
+            }
+            ZYNC_LOG(@"ensure: getArrangedTableContent reachable but no mutable container");
+        }
+    }
+    ZYNC_LOG(@"ensure: container not found");
     return nil;
 }
 
 static id ZyncFetchAccountObject(id vc) {
+    if (!vc) return nil;
     @try {
         id value = [vc valueForKey:@"accountAndSecurityObject"];
         if (value) return value;
     } @catch (__unused NSException *e) {}
 
-    Class cls = object_getClass(vc);
-    unsigned int count = 0;
-    Ivar *ivars = class_copyIvarList(cls, &count);
-    id found = nil;
-    for (unsigned int i = 0; i < count; i++) {
-        const char *name = ivar_getName(ivars[i]);
+    for (NSValue *boxed in ZyncAllIvars(object_getClass(vc))) {
+        Ivar ivar = (Ivar)boxed.pointerValue;
+        const char *name = ivar_getName(ivar);
         if (name && strcmp(name, "_accountAndSecurityObject") == 0) {
-            @try { found = object_getIvar(vc, ivars[i]); } @catch (__unused NSException *e) {}
-            break;
+            id found = nil;
+            @try { found = object_getIvar(vc, ivar); } @catch (__unused NSException *e) {}
+            return found;
         }
     }
-    free(ivars);
-    return found;
+    return nil;
 }
 
 #pragma mark - Snapshot (for row mapping)
 
 static void ZyncRefreshSnapshot(id vc) {
     NSMutableArray<NSArray *> *sections = [NSMutableArray array];
-    NSMutableArray<ZyncBFSNode *> *nodes = ZyncCollectCandidates(vc, 5);
+    NSMutableArray<ZyncBFSNode *> *nodes = ZyncCollectCandidates(vc, 7);
     for (ZyncBFSNode *entry in nodes) {
         id node = entry.node;
         if (![node isKindOfClass:[NSArray class]]) continue;
@@ -339,31 +387,55 @@ static void ZyncRefreshSnapshot(id vc) {
 static BOOL ZyncInjectRow(id vc) {
     if (gOurRow) return YES;
     id accountObject = ZyncFetchAccountObject(vc);
+    ZYNC_LOG(@"ensure: accountObject=%@",
+             accountObject ? NSStringFromClass(object_getClass(accountObject)) : @"<nil>");
     if (!accountObject) return NO;
 
     NSUInteger accountIndex = 0;
     NSMutableArray *container = ZyncFindContainerForObject(vc, accountObject, &accountIndex);
+    ZYNC_LOG(@"ensure: container=%@ count=%lu index=%lu",
+             container ? NSStringFromClass(object_getClass(container)) : @"<nil>",
+             (unsigned long)container.count, (unsigned long)accountIndex);
     if (!container) return NO;
 
     id clone = ZyncCloneCellObject(accountObject);
+    ZYNC_LOG(@"ensure: clone=%@", clone ? NSStringFromClass(object_getClass(clone)) : @"<nil>");
     if (!clone) return NO;
-    if (!ZyncRetitleCellObject(clone, @"Zync Customize", NULL)) {
-        ZYNC_LOG(@"row clone could not be retitled — falling back");
+    NSString *oldTitle = nil;
+    if (!ZyncRetitleCellObject(clone, @"Zync Customize", &oldTitle)) {
+        ZYNC_LOG(@"ensure: retitle failed (old=%@) — row not injected", oldTitle ? oldTitle : @"<nil>");
         return NO;
     }
+    ZYNC_LOG(@"ensure: retitled %@ -> Zync Customize", oldTitle ? oldTitle : @"<unknown>");
 
     NSUInteger insertIndex = MIN(accountIndex, container.count);
     @try {
         [container insertObject:clone atIndex:insertIndex];
-    } @catch (__unused NSException *e) { return NO; }
+    } @catch (__unused NSException *e) {
+        ZYNC_LOG(@"ensure: insert threw");
+        return NO;
+    }
 
     gOurRow = clone;
+    gFallbackActive = NO;
     ZyncRefreshSnapshot(vc);
-    ZYNC_LOG(@"Zync Customize row injected at index %lu", (unsigned long)insertIndex);
+    BOOL visibleInSnapshot = NO;
+    if (gSectionSnapshot) {
+        for (NSArray *array in gSectionSnapshot) {
+            if ([array indexOfObjectIdenticalTo:gOurRow] != NSNotFound) { visibleInSnapshot = YES; break; }
+        }
+    }
+    ZYNC_LOG(@"ensure: Zync Customize row injected at index %lu (visible-in-snapshot=%d)",
+             (unsigned long)insertIndex, visibleInSnapshot);
     return YES;
 }
 
 static void ZyncReloadTable(id vc) {
+    if (![NSThread isMainThread]) {
+        __weak id weakVC = vc;
+        dispatch_async(dispatch_get_main_queue(), ^{ ZyncReloadTable(weakVC); });
+        return;
+    }
     UITableView *tv = nil;
     if ([vc isKindOfClass:[UITableViewController class]]) {
         tv = [(UITableViewController *)vc tableView];
@@ -373,7 +445,7 @@ static void ZyncReloadTable(id vc) {
             if ([view isKindOfClass:[UITableView class]]) { tv = (UITableView *)view; break; }
         }
     }
-    [tv reloadData];
+    if (tv) [tv reloadData];
 }
 
 static BOOL ZyncTableReady(id vc) {
@@ -384,7 +456,25 @@ static BOOL ZyncTableReady(id vc) {
     return tv != nil && [tv numberOfSections] > 0;
 }
 
+static void ZyncScheduleRetry(id vc) {
+    if (gOurRow || gFallbackActive) return;
+    NSNumber *doneNum = objc_getAssociatedObject(vc, &ZyncRetryCountKey);
+    NSInteger tries = doneNum ? doneNum.integerValue : 0;
+    if (tries >= 2) return;
+    objc_setAssociatedObject(vc, &ZyncRetryCountKey, @(tries + 1), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSTimeInterval delay = tries == 0 ? 1.0 : 3.0;
+    ZYNC_LOG(@"ensure: retry %ld in %.0fs", (long)(tries + 1), delay);
+    __weak id weakVC = vc;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        if (weakVC && !gOurRow && !gFallbackActive) {
+            @try { ZyncEnsureRow(weakVC); } @catch (__unused NSException *e) {}
+        }
+    });
+}
+
 static void ZyncEnsureRow(id vc) {
+    if (!vc) return;
     if (gOurRow) {
         // Re-insert if the model was rebuilt without our row.
         BOOL stillPresent = NO;
@@ -399,11 +489,14 @@ static void ZyncEnsureRow(id vc) {
             NSUInteger idx = 0;
             NSMutableArray *container = accountObject ? ZyncFindContainerForObject(vc, accountObject, &idx) : nil;
             if (container) {
-                NSUInteger insertIndex = MIN(idx, container.count);
-                BOOL inserted = NO;
-                @try { [container insertObject:gOurRow atIndex:insertIndex]; inserted = YES; } @catch (__unused NSException *e) {}
-                if (inserted) dispatch_async(dispatch_get_main_queue(), ^{ ZyncReloadTable(vc); });
+                if ([container indexOfObjectIdenticalTo:gOurRow] == NSNotFound) {
+                    BOOL inserted = NO;
+                    @try { [container insertObject:gOurRow atIndex:MIN(idx, container.count)]; inserted = YES; } @catch (__unused NSException *e) {}
+                    ZYNC_LOG(@"ensure: re-inserted row=%d", inserted);
+                    if (inserted) ZyncReloadTable(vc);
+                }
             } else {
+                ZYNC_LOG(@"ensure: model gone — clearing row for re-clone");
                 gOurRow = nil; // model gone; re-clone next pass
             }
         }
@@ -413,12 +506,22 @@ static void ZyncEnsureRow(id vc) {
     }
 
     gInjectAttempts++;
-    if (ZyncInjectRow(vc)) {
-        dispatch_async(dispatch_get_main_queue(), ^{ ZyncReloadTable(vc); });
-    } else if (gInjectAttempts >= 2 && ZyncTableReady(vc)) {
-        gFallbackActive = YES;
-        ZYNC_LOG(@"primary injection unavailable — fallback row active");
-        dispatch_async(dispatch_get_main_queue(), ^{ ZyncReloadTable(vc); });
+    BOOL injected = NO;
+    @try { injected = ZyncInjectRow(vc); } @catch (__unused NSException *e) { injected = NO; }
+    if (injected) {
+        objc_setAssociatedObject(vc, &ZyncRetryCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        ZyncReloadTable(vc);
+    } else {
+        NSNumber *doneNum = objc_getAssociatedObject(vc, &ZyncRetryCountKey);
+        NSInteger tries = doneNum ? doneNum.integerValue : 0;
+        if (ZyncTableReady(vc) && ((gInjectAttempts >= 4 && tries >= 1) || gInjectAttempts >= 10)) {
+            gFallbackActive = YES;
+            ZYNC_LOG(@"ensure: primary exhausted after %lu attempts — fallback row active",
+                     (unsigned long)gInjectAttempts);
+            ZyncReloadTable(vc);
+        } else {
+            ZyncScheduleRetry(vc);
+        }
     }
 }
 
@@ -512,6 +615,13 @@ void ZyncSettingsInstall(void) {
         ZyncEnsureRow(self);
     });
 
+    SEL didAppearSel = sel_registerName("viewDidAppear:");
+    IMP didAppearOrig = class_getMethodImplementation(gSettingsClass, didAppearSel);
+    ZyncReplaceMethod(gSettingsClass, didAppearSel, 1, "v", ^(id self, BOOL animated) {
+        ((ZyncV1Bool)didAppearOrig)(self, didAppearSel, animated);
+        dispatch_async(dispatch_get_main_queue(), ^{ ZyncEnsureRow(self); });
+    });
+
     SEL updateTitleSel = sel_registerName("updateTitleObjects");
     if (ZyncClassHasInstanceMethod(gSettingsClass, updateTitleSel)) {
         IMP updateTitleOrig = class_getMethodImplementation(gSettingsClass, updateTitleSel);
@@ -554,6 +664,45 @@ void ZyncSettingsInstall(void) {
             return ((ZyncObj2)cellOrig)(self, cellSel, tv, indexPath);
         });
     }
+
+    // Late install: Settings may already be on screen before hooks land.
+    // Scan the key window once (main queue) so the visible instance still
+    // gets an injection attempt — no polling loop.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *window = nil;
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]] &&
+                scene.activationState == UISceneActivationStateForegroundActive) {
+                for (UIWindow *w in ((UIWindowScene *)scene).windows) {
+                    if (w.isKeyWindow) { window = w; break; }
+                }
+            }
+            if (window) break;
+        }
+        if (!window) {
+            for (UIWindow *w in [UIApplication sharedApplication].windows) {
+                if (w.isKeyWindow) { window = w; break; }
+            }
+        }
+        UIViewController *root = window.rootViewController;
+        if (!root || window == nil) return;
+        NSMutableArray<UIViewController *> *stack = [NSMutableArray arrayWithObject:root];
+        id found = nil;
+        while (stack.count > 0 && !found) {
+            UIViewController *cursor = stack.firstObject;
+            [stack removeObjectAtIndex:0];
+            if (object_getClass(cursor) == gSettingsClass) { found = cursor; break; }
+            [stack addObjectsFromArray:cursor.childViewControllers];
+            if (cursor.presentedViewController) [stack addObject:cursor.presentedViewController];
+            if ([cursor isKindOfClass:[UINavigationController class]]) {
+                [stack addObjectsFromArray:[(UINavigationController *)cursor viewControllers]];
+            }
+        }
+        if (found) {
+            ZYNC_LOG(@"ensure: late install found visible settings screen — injecting");
+            @try { ZyncEnsureRow(found); } @catch (__unused NSException *e) {}
+        }
+    });
 
     ZYNC_LOG(@"settings integration installed");
 }

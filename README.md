@@ -55,7 +55,7 @@ make gates    # kiểm tra artifact: arm64, deps, install_name, minos, UIGlassEf
 ```
 
 CI: GitHub Actions `macos-26`, đóng gói `Zync-<version>.zip` + SHA-256 + report,
-publish Pre-release khi push tag `build-*` (hiện tại **Build 2** / `build-2`).
+publish Pre-release khi push tag `build-*` (hiện tại **Build 3** / `build-3`).
 
 ## Kiểm chứng anchors
 
