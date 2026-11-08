@@ -9,8 +9,8 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-#define ZYNC_VERSION @"1.0.0"
-#define ZYNC_BUILD   @"2026.11.08"
+#define ZYNC_VERSION @"2.0"
+#define ZYNC_BUILD   @"Build 2"
 
 #define ZYNC_LOG(fmt, ...) NSLog(@"[Zync] " fmt, ##__VA_ARGS__)
 

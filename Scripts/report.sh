@@ -4,7 +4,7 @@ set -euo pipefail
 
 DYLIB="${1:-build/libZync.dylib}"
 OUTDIR="${2:-build}"
-VERSION="${ZYNC_VERSION:-1.0.0}"
+VERSION="${ZYNC_VERSION:-build-2}"
 TAG="${GITHUB_REF_NAME:-local}"
 COMMIT="${GITHUB_SHA:-$(git rev-parse --short HEAD 2>/dev/null || echo local)}"
 

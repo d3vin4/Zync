@@ -87,41 +87,47 @@ static void ZyncGlassRemove(void) {
     }
 }
 
+static BOOL gApplying = NO;
+
 static void ZyncGlassApply(void) {
-    id vc = gTabBarController;
-    if (![vc isKindOfClass:[UIViewController class]]) return;
-    UIViewController *controller = (UIViewController *)vc;
-    BOOL enabled = [[ZyncPreferences shared] boolForKey:kZyncGlassTabBar];
-    UIView *root = controller.view;
-    if (!root) return;
+    if (gApplying) return;
+    if (![[ZyncPreferences shared] boolForKey:kZyncGlassTabBar]) return;
+    gApplying = YES;
+    @try {
+        id vc = gTabBarController;
+        if (![vc isKindOfClass:[UIViewController class]]) return;
+        UIViewController *controller = (UIViewController *)vc;
+        UIView *root = controller.view;
+        if (!root) return;
 
-    if (!enabled) { ZyncGlassRemove(); return; }
+        UIView *bar = ZyncFindTabBarView(root);
+        if (!bar) return;
 
-    UIView *bar = ZyncFindTabBarView(root);
-    if (!bar) return;
+        UIView *overlay = ZyncFindOverlay(root);
+        if (overlay && overlay.superview == bar) {
+            overlay.frame = bar.bounds;
+            return;
+        }
 
-    UIView *overlay = ZyncFindOverlay(root);
-    if (overlay && overlay.superview == bar) {
-        overlay.frame = bar.bounds;
-        return;
+        UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:ZyncMakeEffect()];
+        glass.tag = kZyncGlassOverlayTag;
+        glass.frame = bar.bounds;
+        glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        glass.userInteractionEnabled = NO; // never intercepts navigation touches
+        glass.layer.cornerRadius = bar.layer.cornerRadius;
+        glass.layer.masksToBounds = YES;
+
+        UIView *hairline = [[UIView alloc] initWithFrame:CGRectMake(0, 0, bar.bounds.size.width, 0.5)];
+        hairline.backgroundColor = [UIColor separatorColor];
+        hairline.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
+        hairline.alpha = 0.6;
+        [glass.contentView addSubview:hairline];
+
+        [bar insertSubview:glass atIndex:0];
+        ZYNC_LOG(@"glass overlay applied — %@", ZyncGlassMaterialDescription());
+    } @finally {
+        gApplying = NO;
     }
-
-    UIVisualEffectView *glass = [[UIVisualEffectView alloc] initWithEffect:ZyncMakeEffect()];
-    glass.tag = kZyncGlassOverlayTag;
-    glass.frame = bar.bounds;
-    glass.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    glass.userInteractionEnabled = NO; // never intercepts navigation touches
-    glass.layer.cornerRadius = bar.layer.cornerRadius;
-    glass.layer.masksToBounds = YES;
-
-    UIView *hairline = [[UIView alloc] initWithFrame:CGRectMake(0, 0, bar.bounds.size.width, 0.5)];
-    hairline.backgroundColor = [UIColor separatorColor];
-    hairline.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleBottomMargin;
-    hairline.alpha = 0.6;
-    [glass.contentView addSubview:hairline];
-
-    [bar insertSubview:glass atIndex:0];
-    ZYNC_LOG(@"glass overlay applied — %@", ZyncGlassMaterialDescription());
 }
 
 static void ZyncGlassRefreshForCurrentUI(void) {
@@ -165,14 +171,6 @@ void ZyncGlassInstall(void) {
     IMP appearOrig = class_getMethodImplementation(tabCls, appearSel);
     ZyncReplaceMethod(tabCls, appearSel, 1, "v", ^(id self, BOOL animated) {
         ((ZyncV1Bool)appearOrig)(self, appearSel, animated);
-        gTabBarController = self;
-        ZyncGlassApply();
-    });
-
-    SEL layoutSel = sel_registerName("viewDidLayoutSubviews");
-    IMP layoutOrig = class_getMethodImplementation(tabCls, layoutSel);
-    ZyncReplaceMethod(tabCls, layoutSel, 0, "v", ^(id self) {
-        ((ZyncV0)layoutOrig)(self, layoutSel);
         gTabBarController = self;
         ZyncGlassApply();
     });

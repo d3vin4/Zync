@@ -32,18 +32,32 @@ BOOL ZyncClassHasIvar(Class cls, const char *name) {
     return found;
 }
 
+static NSArray<Class> *ZyncAppClassList(void) {
+    static NSArray<Class> *cached;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableArray<Class> *result = [NSMutableArray array];
+        int count = objc_getClassList(NULL, 0);
+        if (count > 0) {
+            Class *classes = (Class *)malloc(sizeof(Class) * (size_t)count);
+            if (classes) {
+                count = objc_getClassList(classes, count);
+                for (int i = 0; i < count; i++) {
+                    Class cls = classes[i];
+                    if (ZyncIsAppRelatedClass(cls)) [result addObject:cls];
+                }
+                free(classes);
+            }
+        }
+        cached = [result copy];
+        NSLog(@"[Zync] app class list cached: %lu classes", (unsigned long)cached.count);
+    });
+    return cached;
+}
+
 void ZyncEnumerateAppClasses(void (^enumerator)(Class cls)) {
     if (!enumerator) return;
-    int count = objc_getClassList(NULL, 0);
-    if (count <= 0) return;
-    Class *classes = (Class *)malloc(sizeof(Class) * (size_t)count);
-    if (!classes) return;
-    count = objc_getClassList(classes, count);
-    for (int i = 0; i < count; i++) {
-        Class cls = classes[i];
-        if (ZyncIsAppRelatedClass(cls)) enumerator(cls);
-    }
-    free(classes);
+    for (Class cls in ZyncAppClassList()) enumerator(cls);
 }
 
 BOOL ZyncReplaceMethod(Class cls, SEL sel, NSUInteger declaredArgs,
