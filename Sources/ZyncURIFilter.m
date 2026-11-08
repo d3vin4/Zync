@@ -55,7 +55,10 @@ static BOOL ZyncURLIsAd(NSURL *url) {
 }
 
 - (void)startLoading {
-    [NSURLProtocol setProperty:@YES forKey:@"ZyncHandled" inRequest:self.request];
+    NSMutableURLRequest *mutableRequest = [self.request mutableCopy];
+    if (mutableRequest) {
+        [NSURLProtocol setProperty:@YES forKey:@"ZyncHandled" inRequest:mutableRequest];
+    }
     NSString *blocked = (gBlockTracking && ZyncURLIsTracking(self.request.URL)) ? @"tracking" : @"ads";
     ZYNC_LOG(@"blocked %@ endpoint: %@%@", blocked, self.request.URL.host, self.request.URL.path);
     NSHTTPURLResponse *response =

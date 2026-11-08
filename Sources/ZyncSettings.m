@@ -488,8 +488,8 @@ static BOOL ZyncHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) 
 typedef void (*ZyncV0)(id, SEL);
 typedef void (*ZyncV1Bool)(id, SEL, BOOL);
 typedef void (*ZyncV2)(id, SEL, id, id);
-typedef NSInteger (*ZyncQ1)(id, SEL, NSInteger);
-typedef id (*ZyncObj1)(id, SEL, id);
+typedef NSInteger (*ZyncQ2)(id, SEL, id, NSInteger);
+typedef id (*ZyncObj2)(id, SEL, id, id);
 
 void ZyncSettingsInstall(void) {
     gSettingsClass = NSClassFromString(@"SettingUI40TableViewController");
@@ -535,8 +535,8 @@ void ZyncSettingsInstall(void) {
     SEL rowsSel = sel_registerName("tableView:numberOfRowsInSection:");
     if (ZyncClassHasInstanceMethod(gSettingsClass, rowsSel)) {
         IMP rowsOrig = class_getMethodImplementation(gSettingsClass, rowsSel);
-        ZyncReplaceMethod(gSettingsClass, rowsSel, 1, "q", ^NSInteger(id self, NSInteger section) {
-            NSInteger rows = ((ZyncQ1)rowsOrig)(self, rowsSel, section);
+        ZyncReplaceMethod(gSettingsClass, rowsSel, 2, "q", ^NSInteger(id self, UITableView *tv, NSInteger section) {
+            NSInteger rows = ((ZyncQ2)rowsOrig)(self, rowsSel, tv, section);
             if (gFallbackActive && !gOurRow && section == 0) rows += 1;
             return rows;
         });
@@ -549,9 +549,9 @@ void ZyncSettingsInstall(void) {
             if (gFallbackActive && !gOurRow && indexPath.section == 0) {
                 if (indexPath.row == 0) return ZyncBuildFallbackCell(tv, indexPath);
                 NSIndexPath *forward = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:indexPath.section];
-                return ((ZyncObj1)cellOrig)(self, cellSel, tv, forward);
+                return ((ZyncObj2)cellOrig)(self, cellSel, tv, forward);
             }
-            return ((ZyncObj1)cellOrig)(self, cellSel, tv, indexPath);
+            return ((ZyncObj2)cellOrig)(self, cellSel, tv, indexPath);
         });
     }
 
