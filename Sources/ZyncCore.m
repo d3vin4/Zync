@@ -156,7 +156,15 @@ static void ZyncScheduleBootAfterLaunch(void) {
         // visible Settings screen still gets its injection attempt.
         @try {
             UIApplication *app = [UIApplication sharedApplication];
-            if (app && app.window != nil) {
+            BOOL hasWindow = NO;
+            if (app) {
+                for (UIScene *scene in app.connectedScenes) {
+                    if ([scene isKindOfClass:[UIWindowScene class]]) {
+                        if (((UIWindowScene *)scene).windows.count > 0) hasWindow = YES;
+                    }
+                }
+            }
+            if (hasWindow) {
                 ZYNC_LOG(@"boot: window already present at constructor — scheduling boot in 1s");
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
                                dispatch_get_main_queue(), ^{
