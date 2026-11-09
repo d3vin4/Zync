@@ -495,7 +495,8 @@ static const NSInteger kZyncOverlayTag = 0x5A7CE;
 static void ZyncRemoveOverlay(UITableView *tv) {
     if (!tv) return;
     UIView *host = tv.superview ?: tv;
-    while (UIView *old = [host viewWithTag:kZyncOverlayTag]) {
+    UIView *old = nil;
+    while ((old = [host viewWithTag:kZyncOverlayTag])) {
         [old removeFromSuperview];
     }
 }
