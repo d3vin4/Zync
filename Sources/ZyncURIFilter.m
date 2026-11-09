@@ -12,6 +12,8 @@
 
 static BOOL gBlockTracking = NO;
 static BOOL gBlockAds = NO;
+// Block-observer token held for process lifetime (releasing it unregisters).
+static id gZyncURIFilterPrefsToken = nil;
 
 static BOOL ZyncURLIsTracking(NSURL *url) {
     NSString *host = url.host.lowercaseString;
@@ -82,7 +84,7 @@ static void ZyncURIFilterRefresh(void) {
 
 void ZyncURIFilterInstall(void) {
     ZyncURIFilterRefresh();
-    [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
+    gZyncURIFilterPrefsToken = [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
                                                       object:nil
                                                        queue:nil
                                                   usingBlock:^(NSNotification *note) {

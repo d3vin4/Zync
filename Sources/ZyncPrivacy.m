@@ -16,6 +16,9 @@
 
 #import "Zync.h"
 
+// Block-observer token held for process lifetime (releasing it unregisters).
+static id gZyncPrivacyPrefsToken = nil;
+
 #pragma mark - Generic per-arity installer helpers
 
 typedef void (*ZyncV0)(id, SEL);
@@ -142,7 +145,7 @@ void ZyncPrivacyInstall(void) {
 
     // Firebase / analytics.
     ZyncApplyFirebaseState();
-    [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
+    gZyncPrivacyPrefsToken = [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {

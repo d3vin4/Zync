@@ -15,6 +15,8 @@ typedef void (*ZyncV0)(id, SEL);
 typedef void (*ZyncV1Bool)(id, SEL, BOOL);
 
 static const NSInteger kZyncGlassOverlayTag = 0x5A7C;
+// Block-observer token held for process lifetime (releasing it unregisters).
+static id gZyncGlassPrefsToken = nil;
 static __weak id gTabBarController = nil;
 static NSString *gMaterialDescription = nil;
 
@@ -175,7 +177,7 @@ void ZyncGlassInstall(void) {
         ZyncGlassApply();
     });
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
+    gZyncGlassPrefsToken = [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {

@@ -8,6 +8,10 @@
 #import "Zync.h"
 #include <stdio.h>
 
+// Block-observer token must stay alive for process lifetime — releasing it
+// unregisters the observer (NSNotificationCenter docs). Held at file scope.
+static id gZyncDidFinishToken = nil;
+
 #pragma mark - Persistent file log
 
 // ZYNC_LOG also appends to a plain-text file so the user can open the log in
@@ -132,14 +136,18 @@ static void ZyncBootAsync(void) {
 static void ZyncScheduleBootAfterLaunch(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        [[NSNotificationCenter defaultCenter]
+        gZyncDidFinishToken = [[NSNotificationCenter defaultCenter]
             addObserverForName:UIApplicationDidFinishLaunchingNotification
                         object:nil
                          queue:dispatch_get_main_queue()
                     usingBlock:^(NSNotification *note) {
                          (void)note;
-                         ZYNC_LOG(@"boot: DidFinishLaunching notification received");
-                         ZyncBootAsync();
+                         @try {
+                             ZYNC_LOG(@"boot: DidFinishLaunching notification received");
+                             ZyncBootAsync();
+                         } @catch (NSException *exception) {
+                             ZYNC_LOG(@"boot: DidFinishLaunching handler failed: %@", exception.reason);
+                         }
                      }];
 
         // Safety net: the dylib constructor can run after the notification

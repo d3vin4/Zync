@@ -19,6 +19,9 @@
 
 #import "Zync.h"
 
+// Block-observer token held for process lifetime (releasing it unregisters).
+static id gZyncFeaturesPrefsToken = nil;
+
 #pragma mark - Generic BOOL getter forcing
 
 static void ZyForceBoolGetter(const char *selName, NSString *toggleKey, BOOL (^predicate)(Class)) {
@@ -156,7 +159,7 @@ void ZyncFeaturesInstall(void) {
     ZyncApplyGDriveState();
     ZyncApplyMoreTabState();
 
-    [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
+    gZyncFeaturesPrefsToken = [[NSNotificationCenter defaultCenter] addObserverForName:ZyncPrefsDidChangeNotification
                                                       object:nil
                                                        queue:[NSOperationQueue mainQueue]
                                                   usingBlock:^(NSNotification *note) {
