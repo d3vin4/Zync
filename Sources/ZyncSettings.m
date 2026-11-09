@@ -8,9 +8,10 @@
 // selection to push the Zync dashboard. The row that ships is a genuine Zalo
 // cell object — identical height, padding, typography, separator and behaviour.
 //
-// Fallback tier (only if the model cannot be reached): one extra row injected
-// via numberOfRows/cellForRow interception using a Zalo cell class when it can
-// be instantiated, otherwise a standard grouped cell.
+// Overlay tier (only if the model cannot be reached): a "Zync Customize"
+// row drawn as an overlay view directly above the visible "Account and
+// security" cell. It never touches the dataSource, so it works regardless
+// of which dataSource object the table view actually uses.
 
 #import "Zync.h"
 
@@ -19,7 +20,6 @@
 static id gOurRow = nil;
 static NSArray<NSArray *> *gSectionSnapshot = nil;
 static BOOL gSnapshotAligned = NO;
-static BOOL gFallbackActive = NO;
 static NSUInteger gInjectAttempts = 0;
 static Class gSettingsClass = Nil;
 
@@ -32,6 +32,8 @@ static NSArray<NSString *> *ZyncKnownAccountTitleValues(void) {
 }
 
 static void ZyncEnsureRow(id vc);
+static void ZyncPresentOverlayRow(id vc);
+static void ZyncUpdateOverlay(id vc);
 static char ZyncRetryCountKey;
 static const NSUInteger kZyncMaxBFNodes = 4000;
 
@@ -417,7 +419,6 @@ static BOOL ZyncInjectRow(id vc) {
     }
 
     gOurRow = clone;
-    gFallbackActive = NO;
     ZyncRefreshSnapshot(vc);
     BOOL visibleInSnapshot = NO;
     if (gSectionSnapshot) {
@@ -471,7 +472,7 @@ static BOOL ZyncTableReady(id vc) {
 }
 
 static void ZyncScheduleRetry(id vc) {
-    if (gOurRow || gFallbackActive) return;
+    if (gOurRow) return;
     NSNumber *doneNum = objc_getAssociatedObject(vc, &ZyncRetryCountKey);
     NSInteger tries = doneNum ? doneNum.integerValue : 0;
     if (tries >= 2) return;
@@ -481,10 +482,174 @@ static void ZyncScheduleRetry(id vc) {
     __weak id weakVC = vc;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (weakVC && !gOurRow && !gFallbackActive) {
+        if (weakVC && !gOurRow) {
             @try { ZyncEnsureRow(weakVC); } @catch (__unused NSException *e) {}
         }
     });
+}
+
+#pragma mark - Overlay row (no dataSource mutation)
+
+static const NSInteger kZyncOverlayTag = 0x5A7CE;
+
+static void ZyncRemoveOverlay(UITableView *tv) {
+    if (!tv) return;
+    UIView *host = tv.superview ?: tv;
+    while (UIView *old = [host viewWithTag:kZyncOverlayTag]) {
+        [old removeFromSuperview];
+    }
+}
+
+static BOOL ZyncTextMatchesAccount(NSString *text) {
+    if (!text || text.length == 0) return NO;
+    NSString *lower = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    lower = [lower lowercaseString];
+    NSString *viTitle = [@"Tài khoản và bảo mật" lowercaseString];
+    NSString *enTitle = [@"Account and security" lowercaseString];
+    return [lower isEqualToString:viTitle] || [lower isEqualToString:enTitle];
+}
+
+static UILabel *ZyncFindFirstLabelRec(UIView *view) {
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UILabel class]]) return (UILabel *)sub;
+        UILabel *nested = ZyncFindFirstLabelRec(sub);
+        if (nested) return nested;
+    }
+    return nil;
+}
+
+static NSString *ZyncCellText(UITableViewCell *cell) {
+    if (!cell) return nil;
+    if (cell.textLabel && cell.textLabel.text.length > 0) return cell.textLabel.text;
+    UILabel *label = ZyncFindFirstLabelRec(cell);
+    if (label && label.text.length > 0) return label.text;
+    return nil;
+}
+
+static UITableViewCell *ZyncFindAccountCell(UITableView *tv) {
+    if (!tv) return nil;
+    for (UITableViewCell *cell in tv.visibleCells) {
+        if (ZyncTextMatchesAccount(ZyncCellText(cell))) return cell;
+    }
+    return nil;
+}
+
+@interface ZyncOverlayControl : UIControl
+@property (nonatomic, copy) void (^onTap)(void);
+@end
+
+@implementation ZyncOverlayControl
+
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
+    [super touchesEnded:touches withEvent:event];
+    if (self.onTap) self.onTap();
+}
+
+@end
+
+static UIView *ZyncBuildOverlayRow(UITableView *tv, UITableViewCell *accountCell, id vc) {
+    CGFloat overlayHeight = accountCell ? accountCell.frame.size.height : 44.0;
+    if (overlayHeight <= 0) overlayHeight = 44.0;
+    UIView *overlay = [[UIView alloc] initWithFrame:CGRectMake(tv.bounds.origin.x,
+                                                                CGRectGetMinY(accountCell.frame) - overlayHeight,
+                                                                tv.bounds.size.width,
+                                                                overlayHeight)];
+    overlay.tag = kZyncOverlayTag;
+    overlay.backgroundColor = accountCell.backgroundColor;
+    overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    overlay.userInteractionEnabled = YES;
+
+    UILabel *sourceLabel = accountCell.textLabel ?: ZyncFindFirstLabelRec(accountCell);
+    CGFloat inset = 16.0;
+    if (sourceLabel && sourceLabel.frame.origin.x > 0) inset = sourceLabel.frame.origin.x;
+
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(inset, 0, tv.bounds.size.width - inset * 2 - 30, overlayHeight)];
+    title.text = @"Zync Customize";
+    title.font = sourceLabel.font ?: [UIFont systemFontOfSize:17.0];
+    title.textColor = [UIColor labelColor];
+    title.backgroundColor = [UIColor clearColor];
+    title.userInteractionEnabled = NO;
+    [overlay addSubview:title];
+
+    UILabel *chevron = [[UILabel alloc] initWithFrame:CGRectMake(tv.bounds.size.width - inset - 20, 0, 20, overlayHeight)];
+    chevron.text = @"›";
+    chevron.font = [UIFont systemFontOfSize:17.0];
+    chevron.textColor = [UIColor separatorColor];
+    chevron.textAlignment = NSTextAlignmentRight;
+    chevron.backgroundColor = [UIColor clearColor];
+    chevron.userInteractionEnabled = NO;
+    chevron.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [overlay addSubview:chevron];
+
+    ZyncOverlayControl *control = [[ZyncOverlayControl alloc] initWithFrame:overlay.bounds];
+    control.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    control.backgroundColor = [UIColor clearColor];
+    __weak id weakVC = vc;
+    __weak UITableView *weakTV = tv;
+    control.onTap = ^{
+        id host = weakVC;
+        UITableView *table = weakTV;
+        if (host && table) {
+            UITableViewCell *cell = ZyncFindAccountCell(table);
+            if (cell) {
+                NSIndexPath *path = [table indexPathForCell:cell];
+                if (path) [table deselectRowAtIndexPath:path animated:YES];
+            }
+        }
+        if (host) [ZyncSettingsViewController pushFrom:host];
+    };
+    [overlay addSubview:control];
+    return overlay;
+}
+
+static void ZyncPresentOverlayRow(id vc) {
+    if (!vc) return;
+    if (![NSThread isMainThread]) {
+        __weak id weakVC = vc;
+        dispatch_async(dispatch_get_main_queue(), ^{ ZyncPresentOverlayRow(weakVC); });
+        return;
+    }
+    UITableView *tv = ZyncTableViewForVC(vc);
+    if (!tv) {
+        ZYNC_LOG(@"ensure: overlay no tableView");
+        return;
+    }
+    UITableViewCell *accountCell = ZyncFindAccountCell(tv);
+    if (!accountCell) {
+        ZYNC_LOG(@"ensure: overlay awaiting account cell");
+        ZyncScheduleRetry(vc);
+        return;
+    }
+    ZyncRemoveOverlay(tv);
+    UIView *overlay = ZyncBuildOverlayRow(tv, accountCell, vc);
+    [tv addSubview:overlay];
+    [tv bringSubviewToFront:overlay];
+    ZYNC_LOG(@"ensure: overlay row visible above account cell");
+}
+
+static void ZyncUpdateOverlay(id vc) {
+    if (!vc) return;
+    if (![NSThread isMainThread]) {
+        __weak id weakVC = vc;
+        dispatch_async(dispatch_get_main_queue(), ^{ ZyncUpdateOverlay(weakVC); });
+        return;
+    }
+    UITableView *tv = ZyncTableViewForVC(vc);
+    if (!tv) return;
+    UIView *host = tv.superview ?: tv;
+    UIView *overlay = [host viewWithTag:kZyncOverlayTag];
+    if (!overlay) return;
+    UITableViewCell *accountCell = ZyncFindAccountCell(tv);
+    if (!accountCell) {
+        overlay.hidden = YES;
+        ZYNC_LOG(@"ensure: overlay awaiting account cell");
+        return;
+    }
+    CGFloat overlayHeight = accountCell.frame.size.height > 0 ? accountCell.frame.size.height : 44.0;
+    overlay.hidden = NO;
+    overlay.frame = CGRectMake(tv.bounds.origin.x, CGRectGetMinY(accountCell.frame) - overlayHeight,
+                               tv.bounds.size.width, overlayHeight);
+    ZYNC_LOG(@"ensure: overlay row visible above account cell");
 }
 
 static void ZyncEnsureRow(id vc) {
@@ -525,8 +690,11 @@ static void ZyncEnsureRow(id vc) {
     if (injected) {
         // Per-VC retry count (associated object) resets on primary success;
         // the global attempt counter remains a backstop only and never gates
-        // fallback on its own (see below).
+        // the overlay on its own (see below).
         objc_setAssociatedObject(vc, &ZyncRetryCountKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        // Primary row now owns visibility; drop any overlay left from an
+        // earlier overlay-tier presentation so the row is not duplicated.
+        ZyncRemoveOverlay(ZyncTableViewForVC(vc));
         ZyncReloadTable(vc);
     } else {
         NSNumber *doneNum = objc_getAssociatedObject(vc, &ZyncRetryCountKey);
@@ -536,45 +704,16 @@ static void ZyncEnsureRow(id vc) {
         BOOL tableReady = ZyncTableReady(vc);
         ZYNC_LOG(@"ensure: primary inject failed (attempts=%lu perVCtries=%ld hasTableView=%d tableReady=%d)",
                  (unsigned long)gInjectAttempts, (long)tries, hasTableView, tableReady);
-        // Deterministic fallback: two primary failures in a row with a
-        // non-nil tableView show the fallback immediately. tableReady alone
-        // never blocks fallback (a buggy ready check is a suspected
-        // blocker) — once per-VC retries are exhausted, fall back anyway.
+        // After retries, fall back to the overlay above the visible
+        // "Account and security" cell instead of any dataSource mutation.
         if ((tries >= 1 && hasTableView) || tries >= 2 || gInjectAttempts >= 10) {
-            gFallbackActive = YES;
-            ZYNC_LOG(@"ensure: primary exhausted after %lu attempts (perVCtries=%ld hasTableView=%d tableReady=%d) — fallback row active",
+            ZYNC_LOG(@"ensure: primary exhausted after %lu attempts (perVCtries=%ld hasTableView=%d tableReady=%d) — presenting overlay",
                      (unsigned long)gInjectAttempts, (long)tries, hasTableView, tableReady);
-            ZyncReloadTable(vc);
+            ZyncPresentOverlayRow(vc);
         } else {
             ZyncScheduleRetry(vc);
         }
     }
-}
-
-#pragma mark - Fallback cell
-
-static UITableViewCell *ZyncBuildFallbackCell(UITableView *tv, NSIndexPath *indexPath) {
-    NSString *reuse = @"ZyncCustomizeRow";
-    UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:reuse];
-    if (cell) return cell;
-
-    for (NSString *name in @[@"BasicSettingCell", @"BasicSettingCellV2"]) {
-        Class cls = NSClassFromString(name);
-        if (!cls || ![cls isSubclassOfClass:[UITableViewCell class]]) continue;
-        @try {
-            cell = [[cls alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuse];
-        } @catch (__unused NSException *e) { cell = nil; }
-        if (cell) break;
-    }
-
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:reuse];
-        cell.textLabel.font = [UIFont systemFontOfSize:17.0];
-        cell.textLabel.textColor = [UIColor labelColor];
-    }
-    cell.textLabel.text = @"Zync Customize";
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-    return cell;
 }
 
 #pragma mark - Row selection
@@ -604,11 +743,6 @@ static BOOL ZyncHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) 
         return NO;
     }
 
-    if (gFallbackActive && indexPath.section == 0 && indexPath.row == 0) {
-        [ZyncSettingsViewController pushFrom:vc];
-        [tv deselectRowAtIndexPath:indexPath animated:YES];
-        return YES;
-    }
     return NO;
 }
 
@@ -617,8 +751,6 @@ static BOOL ZyncHandleSelection(id vc, NSIndexPath *indexPath, UITableView *tv) 
 typedef void (*ZyncV0)(id, SEL);
 typedef void (*ZyncV1Bool)(id, SEL, BOOL);
 typedef void (*ZyncV2)(id, SEL, id, id);
-typedef NSInteger (*ZyncQ2)(id, SEL, id, NSInteger);
-typedef id (*ZyncObj2)(id, SEL, id, id);
 
 void ZyncSettingsInstall(void) {
     gSettingsClass = NSClassFromString(@"SettingUI40TableViewController");
@@ -665,46 +797,24 @@ void ZyncSettingsInstall(void) {
     }
     ZYNC_LOG(@"settings hook updateTitleObjects validated=%d", okUpdateTitle);
 
+    SEL layoutSel = sel_registerName("viewDidLayoutSubviews");
+    IMP layoutOrig = class_getMethodImplementation(gSettingsClass, layoutSel);
+    BOOL okLayout = ZyncReplaceMethod(gSettingsClass, layoutSel, 0, "v", ^(id self) {
+        ((ZyncV0)layoutOrig)(self, layoutSel);
+        ZyncUpdateOverlay(self);
+    });
+    ZYNC_LOG(@"settings hook viewDidLayoutSubviews validated=%d", okLayout);
+
     SEL didSelectSel = sel_registerName("tableView:didSelectRowAtIndexPath:");
     IMP didSelectOrig = class_getMethodImplementation(gSettingsClass, didSelectSel);
     BOOL okDidSelect = ZyncReplaceMethod(gSettingsClass, didSelectSel, 2, "v", ^(id self, UITableView *tv, NSIndexPath *indexPath) {
         if (ZyncHandleSelection(self, indexPath, tv)) return;
-        NSIndexPath *forward = indexPath;
-        if (gFallbackActive && !gOurRow && indexPath.section == 0 && indexPath.row > 0) {
-            forward = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:indexPath.section];
-        }
-        ((ZyncV2)didSelectOrig)(self, didSelectSel, tv, forward);
+        ((ZyncV2)didSelectOrig)(self, didSelectSel, tv, indexPath);
     });
     ZYNC_LOG(@"settings hook didSelect validated=%d (tableView:didSelectRowAtIndexPath:)", okDidSelect);
 
-    SEL rowsSel = sel_registerName("tableView:numberOfRowsInSection:");
-    BOOL okNumberOfRows = NO;
-    if (ZyncClassHasInstanceMethod(gSettingsClass, rowsSel)) {
-        IMP rowsOrig = class_getMethodImplementation(gSettingsClass, rowsSel);
-        okNumberOfRows = ZyncReplaceMethod(gSettingsClass, rowsSel, 2, "q", ^NSInteger(id self, UITableView *tv, NSInteger section) {
-            NSInteger rows = ((ZyncQ2)rowsOrig)(self, rowsSel, tv, section);
-            if (gFallbackActive && !gOurRow && section == 0) rows += 1;
-            return rows;
-        });
-    }
-    ZYNC_LOG(@"settings hook numberOfRows validated=%d (tableView:numberOfRowsInSection:)", okNumberOfRows);
-
-    SEL cellSel = sel_registerName("tableView:cellForRowAtIndexPath:");
-    BOOL okCellForRow = NO;
-    if (ZyncClassHasInstanceMethod(gSettingsClass, cellSel)) {
-        IMP cellOrig = class_getMethodImplementation(gSettingsClass, cellSel);
-        okCellForRow = ZyncReplaceMethod(gSettingsClass, cellSel, 2, "@", ^id(id self, UITableView *tv, NSIndexPath *indexPath) {
-            if (gFallbackActive && !gOurRow && indexPath.section == 0) {
-                if (indexPath.row == 0) return ZyncBuildFallbackCell(tv, indexPath);
-                NSIndexPath *forward = [NSIndexPath indexPathForRow:indexPath.row - 1 inSection:indexPath.section];
-                return ((ZyncObj2)cellOrig)(self, cellSel, tv, forward);
-            }
-            return ((ZyncObj2)cellOrig)(self, cellSel, tv, indexPath);
-        });
-    }
-    ZYNC_LOG(@"settings hook cellForRow validated=%d (tableView:cellForRowAtIndexPath:)", okCellForRow);
-    ZYNC_LOG(@"settings hooks summary viewDidAppear:=%d viewWillAppear:=%d updateTitleObjects=%d cellForRow=%d numberOfRows=%d didSelect=%d",
-             okViewDidAppear, okViewWillAppear, okUpdateTitle, okCellForRow, okNumberOfRows, okDidSelect);
+    ZYNC_LOG(@"settings hooks summary viewDidAppear:=%d viewWillAppear:=%d updateTitleObjects=%d viewDidLayoutSubviews=%d didSelect=%d",
+             okViewDidAppear, okViewWillAppear, okUpdateTitle, okLayout, okDidSelect);
 
     // Late install: Settings may already be on screen before hooks land.
     // Scan the key window once (main queue) so the visible instance still

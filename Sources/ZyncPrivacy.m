@@ -27,6 +27,90 @@ typedef void (*ZyncV2)(id, SEL, id, id);
 typedef void (*ZyncV3)(id, SEL, id, id, id);
 typedef void (*ZyncV5)(id, SEL, id, id, id, id, id);
 
+// Gate: every declared argument must be an object (# = Class, @ = object,
+// including @"Class" and @"?" block forms). Scalar (Q/i/B/c/s/...) or
+// pointer (^/*/v) arguments would be retained as objects by the id-based
+// hook — an EXC_BAD_ACCESS during objc_retain — so refuse them here.
+// Uses only class_getInstanceMethod / method_getNumberOfArguments /
+// method_getTypeEncoding; no new anchors.
+static const char *ZySkipTypeQualifiers(const char *p) {
+    while (p && (*p == 'r' || *p == 'n' || *p == 'N' || *p == 'O' ||
+                 *p == 'V' || *p == 'o')) {
+        p++;
+    }
+    return p;
+}
+
+static const char *ZySkipOneType(const char *p) {
+    if (!p) return p;
+    p = ZySkipTypeQualifiers(p);
+    char c = *p;
+    if (c == '\0') return p;
+    if (c == '{' || c == '(' || c == '[') {
+        char close = (c == '{') ? '}' : (c == '(' ? ')' : ']');
+        int depth = 0;
+        while (*p) {
+            if (*p == c) depth++;
+            else if (*p == close) {
+                depth--;
+                p++;
+                if (depth == 0) break;
+                continue;
+            }
+            p++;
+        }
+        return p;
+    }
+    if (c == '^') {
+        p++;
+        return ZySkipOneType(p);
+    }
+    if (c == '@') {
+        p++;
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"') p++;
+            if (*p == '"') p++;
+        } else if (*p == '?') {
+            // Bare block form @?
+            p++;
+        }
+        return p;
+    }
+    if (c == '"') {
+        p++;
+        while (*p && *p != '"') p++;
+        if (*p == '"') p++;
+        return p;
+    }
+    return p + 1;
+}
+
+static BOOL ZyArgsAreObjects(Class cls, SEL sel, NSUInteger declaredArgs) {
+    if (!cls || !sel) return NO;
+    Method method = class_getInstanceMethod(cls, sel);
+    if (!method) return NO;
+    const char *enc = method_getTypeEncoding(method);
+    if (!enc || enc[0] == '\0') return NO;
+    if (method_getNumberOfArguments(method) != declaredArgs + 2) {
+        ZYNC_LOG(@"skip %s -[%s] non-object arg in %s", sel_getName(sel), class_getName(cls), enc);
+        return NO;
+    }
+    const char *p = enc;
+    p = ZySkipOneType(p); // return
+    p = ZySkipOneType(p); // self
+    p = ZySkipOneType(p); // _cmd
+    for (NSUInteger i = 0; i < declaredArgs; i++) {
+        const char *q = ZySkipTypeQualifiers(p);
+        if (*q != '@' && *q != '#') {
+            ZYNC_LOG(@"skip %s -[%s] non-object arg in %s", sel_getName(sel), class_getName(cls), enc);
+            return NO;
+        }
+        p = ZySkipOneType(p);
+    }
+    return YES;
+}
+
 static void ZyInstallV0(const char *selName, NSString *toggleKey) {
     SEL sel = sel_registerName(selName);
     ZyncEnumerateAppClasses(^(Class cls) {
@@ -43,6 +127,7 @@ static void ZyInstallV1(const char *selName, NSString *toggleKey) {
     SEL sel = sel_registerName(selName);
     ZyncEnumerateAppClasses(^(Class cls) {
         if (!ZyncClassHasInstanceMethod(cls, sel)) return;
+        if (!ZyArgsAreObjects(cls, sel, 1)) return;
         IMP original = class_getMethodImplementation(cls, sel);
         ZyncReplaceMethod(cls, sel, 1, "v", ^(id self, id a1) {
             if ([[ZyncPreferences shared] boolForKey:toggleKey]) return;
@@ -55,6 +140,7 @@ static void ZyInstallV2(const char *selName, NSString *toggleKey) {
     SEL sel = sel_registerName(selName);
     ZyncEnumerateAppClasses(^(Class cls) {
         if (!ZyncClassHasInstanceMethod(cls, sel)) return;
+        if (!ZyArgsAreObjects(cls, sel, 2)) return;
         IMP original = class_getMethodImplementation(cls, sel);
         ZyncReplaceMethod(cls, sel, 2, "v", ^(id self, id a1, id a2) {
             if ([[ZyncPreferences shared] boolForKey:toggleKey]) return;
@@ -67,6 +153,7 @@ static void ZyInstallV3(const char *selName, NSString *toggleKey) {
     SEL sel = sel_registerName(selName);
     ZyncEnumerateAppClasses(^(Class cls) {
         if (!ZyncClassHasInstanceMethod(cls, sel)) return;
+        if (!ZyArgsAreObjects(cls, sel, 3)) return;
         IMP original = class_getMethodImplementation(cls, sel);
         ZyncReplaceMethod(cls, sel, 3, "v", ^(id self, id a1, id a2, id a3) {
             if ([[ZyncPreferences shared] boolForKey:toggleKey]) return;
@@ -79,6 +166,7 @@ static void ZyInstallV5(const char *selName, NSString *toggleKey) {
     SEL sel = sel_registerName(selName);
     ZyncEnumerateAppClasses(^(Class cls) {
         if (!ZyncClassHasInstanceMethod(cls, sel)) return;
+        if (!ZyArgsAreObjects(cls, sel, 5)) return;
         IMP original = class_getMethodImplementation(cls, sel);
         ZyncReplaceMethod(cls, sel, 5, "v", ^(id self, id a1, id a2, id a3, id a4, id a5) {
             if ([[ZyncPreferences shared] boolForKey:toggleKey]) return;
