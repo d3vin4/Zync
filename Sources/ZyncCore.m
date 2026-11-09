@@ -139,7 +139,7 @@ static void ZyncScheduleBootAfterLaunch(void) {
         gZyncDidFinishToken = [[NSNotificationCenter defaultCenter]
             addObserverForName:UIApplicationDidFinishLaunchingNotification
                         object:nil
-                         queue:dispatch_get_main_queue()
+                         queue:nil
                     usingBlock:^(NSNotification *note) {
                          (void)note;
                          @try {
