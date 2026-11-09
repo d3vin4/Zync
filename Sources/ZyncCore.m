@@ -1,8 +1,8 @@
 // language: Objective-C, file: ZyncCore.m, target: iOS 15.1+ (Zalo 26.11.01, arm64)
 // Initialization and lifecycle. Loaded via LC_LOAD_DYLIB; raw constructor only
 // logs immediately (stderr + NSLog) and registers a one-shot observer for
-// UIApplicationDidFinishLaunchingNotification. Heavy installs run later on a
-// global concurrent queue so the host's first draw is never blocked.
+// UIApplicationDidFinishLaunchingNotification. Heavy installs run later on the
+// main queue so ObjC runtime lookups never race the host's runtime lock.
 // Each module install is isolated: a failure in one module never blocks others.
 
 #import "Zync.h"
@@ -120,7 +120,7 @@ static void ZyncBoot(void) {
 }
 
 static void ZyncBootAsync(void) {
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_async(dispatch_get_main_queue(), ^{
         @try {
             ZyncBoot();
         } @catch (NSException *exception) {
@@ -135,7 +135,7 @@ static void ZyncScheduleBootAfterLaunch(void) {
         [[NSNotificationCenter defaultCenter]
             addObserverForName:UIApplicationDidFinishLaunchingNotification
                         object:nil
-                          queue:nil
+                          queue:dispatch_get_main_queue()]
                      usingBlock:^(NSNotification *note) {
                          (void)note;
                          ZYNC_LOG(@"boot: DidFinishLaunching notification received");

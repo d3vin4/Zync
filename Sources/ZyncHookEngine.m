@@ -4,13 +4,15 @@
 // encoding first; anything that does not match is skipped silently (logged).
 
 #import "Zync.h"
+#include <string.h>
 
 BOOL ZyncIsAppRelatedClass(Class cls) {
     if (!cls) return NO;
-    NSBundle *bundle = [NSBundle bundleForClass:cls];
-    NSString *path = [bundle bundlePath];
-    if (!path) return NO;
-    return [path containsString:@"/Zalo.app/"];
+    // Pure mach-O metadata lookup — no NSBundle, no class realization, no
+    // objc runtime lock. class_getImageName reads dyld image data only.
+    const char *image = class_getImageName(cls);
+    if (!image) return NO;
+    return strstr(image, "/Zalo.app/") != NULL;
 }
 
 BOOL ZyncClassHasInstanceMethod(Class cls, SEL sel) {
@@ -36,6 +38,7 @@ static NSArray<Class> *ZyncAppClassList(void) {
     static NSArray<Class> *cached;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        CFAbsoluteTime scanStart = CFAbsoluteTimeGetCurrent();
         NSMutableArray<Class> *result = [NSMutableArray array];
         int count = objc_getClassList(NULL, 0);
         if (count > 0) {
@@ -50,7 +53,8 @@ static NSArray<Class> *ZyncAppClassList(void) {
             }
         }
         cached = [result copy];
-        NSLog(@"[Zync] app class list cached: %lu classes", (unsigned long)cached.count);
+        double scanMs = (CFAbsoluteTimeGetCurrent() - scanStart) * 1000.0;
+        NSLog(@"[Zync] app class list cached: %lu classes in %.2f ms", (unsigned long)cached.count, scanMs);
     });
     return cached;
 }
