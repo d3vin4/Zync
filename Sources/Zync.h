@@ -9,8 +9,8 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-#define ZYNC_VERSION @"9.0"
-#define ZYNC_BUILD   @"Build 9"
+#define ZYNC_VERSION @"10.0"
+#define ZYNC_BUILD   @"Build 10"
 
 /** Appends a formatted line to <Documents>/Zync.log and the App Group log (tmp fallback). Implemented in ZyncCore.m. */
 void ZyncFileLog(NSString *format, ...);

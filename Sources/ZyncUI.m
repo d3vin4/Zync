@@ -24,6 +24,7 @@ extern NSString *ZyncGlassMaterialDescription(void);
 + (void)pushFrom:(UIViewController *)host {
     ZyncSettingsViewController *dash = [ZyncSettingsViewController make];
     UINavigationController *nav = host.navigationController;
+    ZYNC_LOG(@"ensure: overlay pushFrom nav=%@", nav ? NSStringFromClass([nav class]) : @"<nil>");
     if (nav) {
         [nav pushViewController:dash animated:YES];
         return;

@@ -699,9 +699,15 @@ static UITableViewCell *ZyncFindAccountCell(UITableView *tv, id vc) {
 
 @interface ZyncOverlayControl : UIControl
 @property (nonatomic, copy) void (^onTap)(void);
+- (void)handleOverlayTap:(UITapGestureRecognizer *)gesture;
 @end
 
 @implementation ZyncOverlayControl
+
+- (void)handleOverlayTap:(UITapGestureRecognizer *)gesture {
+    (void)gesture;
+    if (self.onTap) self.onTap();
+}
 
 - (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event {
     [super touchesEnded:touches withEvent:event];
@@ -713,8 +719,18 @@ static UITableViewCell *ZyncFindAccountCell(UITableView *tv, id vc) {
 static UIView *ZyncBuildOverlayRow(UITableView *tv, UITableViewCell *accountCell, id vc) {
     CGFloat overlayHeight = accountCell ? accountCell.frame.size.height : 44.0;
     if (overlayHeight <= 0) overlayHeight = 44.0;
-    UIView *overlay = [[UIView alloc] initWithFrame:CGRectMake(tv.bounds.origin.x,
-                                                                CGRectGetMinY(accountCell.frame) - overlayHeight,
+    UIView *host = tv.superview ?: tv;
+    CGRect anchorFrame;
+    if (tv.superview && accountCell.superview) {
+        anchorFrame = [tv convertRect:accountCell.frame fromView:accountCell.superview];
+        if (host != tv) {
+            anchorFrame = [host convertRect:anchorFrame fromView:tv];
+        }
+    } else {
+        anchorFrame = accountCell.frame;
+    }
+    UIView *overlay = [[UIView alloc] initWithFrame:CGRectMake(anchorFrame.origin.x,
+                                                                CGRectGetMinY(anchorFrame) - overlayHeight,
                                                                 tv.bounds.size.width,
                                                                 overlayHeight)];
     overlay.tag = kZyncOverlayTag;
@@ -747,21 +763,34 @@ static UIView *ZyncBuildOverlayRow(UITableView *tv, UITableViewCell *accountCell
     ZyncOverlayControl *control = [[ZyncOverlayControl alloc] initWithFrame:overlay.bounds];
     control.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     control.backgroundColor = [UIColor clearColor];
+    control.userInteractionEnabled = YES;
     __weak id weakVC = vc;
     __weak UITableView *weakTV = tv;
     control.onTap = ^{
-        id host = weakVC;
-        UITableView *table = weakTV;
-        if (host && table) {
-            UITableViewCell *cell = ZyncFindAccountCell(table, host);
-            if (cell) {
-                NSIndexPath *path = [table indexPathForCell:cell];
-                if (path) [table deselectRowAtIndexPath:path animated:YES];
+        ZYNC_LOG(@"ensure: overlay tapped");
+        @try {
+            id host = weakVC;
+            UITableView *table = weakTV;
+            if (host && table) {
+                UITableViewCell *cell = ZyncFindAccountCell(table, host);
+                if (cell) {
+                    NSIndexPath *path = [table indexPathForCell:cell];
+                    if (path) [table deselectRowAtIndexPath:path animated:YES];
+                }
             }
+            if (host) {
+                ZYNC_LOG(@"ensure: overlay pushFrom host=%@", NSStringFromClass([host class]));
+                [ZyncSettingsViewController pushFrom:host];
+            }
+        } @catch (__unused NSException *e) {
+            ZYNC_LOG(@"ensure: overlay pushFrom threw");
         }
-        if (host) [ZyncSettingsViewController pushFrom:host];
     };
     [overlay addSubview:control];
+    UITapGestureRecognizer *tapRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:control action:@selector(handleOverlayTap:)];
+    tapRecognizer.numberOfTapsRequired = 1;
+    tapRecognizer.cancelsTouchesInView = NO;
+    [overlay addGestureRecognizer:tapRecognizer];
     return overlay;
 }
 
@@ -785,8 +814,9 @@ static void ZyncPresentOverlayRow(id vc) {
     }
     ZyncRemoveOverlay(tv);
     UIView *overlay = ZyncBuildOverlayRow(tv, accountCell, vc);
-    [tv addSubview:overlay];
-    [tv bringSubviewToFront:overlay];
+    UIView *host = tv.superview ?: tv;
+    [host addSubview:overlay];
+    [host bringSubviewToFront:overlay];
     ZYNC_LOG(@"ensure: overlay row visible above account cell");
 }
 
@@ -810,8 +840,18 @@ static void ZyncUpdateOverlay(id vc) {
     }
     CGFloat overlayHeight = accountCell.frame.size.height > 0 ? accountCell.frame.size.height : 44.0;
     overlay.hidden = NO;
-    overlay.frame = CGRectMake(tv.bounds.origin.x, CGRectGetMinY(accountCell.frame) - overlayHeight,
+    CGRect anchorFrame;
+    if (tv.superview && accountCell.superview) {
+        anchorFrame = [tv convertRect:accountCell.frame fromView:accountCell.superview];
+        if (host != tv) {
+            anchorFrame = [host convertRect:anchorFrame fromView:tv];
+        }
+    } else {
+        anchorFrame = accountCell.frame;
+    }
+    overlay.frame = CGRectMake(anchorFrame.origin.x, CGRectGetMinY(anchorFrame) - overlayHeight,
                                tv.bounds.size.width, overlayHeight);
+    [host bringSubviewToFront:overlay];
     ZYNC_LOG(@"ensure: overlay row visible above account cell");
 }
 
