@@ -33,6 +33,11 @@ typedef void (*ZyncV5)(id, SEL, id, id, id, id, id);
 // hook — an EXC_BAD_ACCESS during objc_retain — so refuse them here.
 // Uses only class_getInstanceMethod / method_getNumberOfArguments /
 // method_getTypeEncoding; no new anchors.
+static const char *ZySkipDigits(const char *p) {
+    while (p && *p >= '0' && *p <= '9') p++;
+    return p;
+}
+
 static const char *ZySkipTypeQualifiers(const char *p) {
     while (p && (*p == 'r' || *p == 'n' || *p == 'N' || *p == 'O' ||
                  *p == 'V' || *p == 'o')) {
@@ -43,7 +48,11 @@ static const char *ZySkipTypeQualifiers(const char *p) {
 
 static const char *ZySkipOneType(const char *p) {
     if (!p) return p;
+    // Modern encodings carry byte-offset size digits before/after each type
+    // (e.g. v40@0:8@16@24@32). Skip them so offsets are never read as types.
+    p = ZySkipDigits(p);
     p = ZySkipTypeQualifiers(p);
+    p = ZySkipDigits(p);
     char c = *p;
     if (c == '\0') return p;
     if (c == '{' || c == '(' || c == '[') {
@@ -59,7 +68,7 @@ static const char *ZySkipOneType(const char *p) {
             }
             p++;
         }
-        return p;
+        return ZySkipDigits(p);
     }
     if (c == '^') {
         p++;
@@ -75,15 +84,16 @@ static const char *ZySkipOneType(const char *p) {
             // Bare block form @?
             p++;
         }
-        return p;
+        return ZySkipDigits(p);
     }
     if (c == '"') {
         p++;
         while (*p && *p != '"') p++;
         if (*p == '"') p++;
-        return p;
+        return ZySkipDigits(p);
     }
-    return p + 1;
+    // Single-char types including ':' (skip as 1 char) and scalars (Q/i/...).
+    return ZySkipDigits(p + 1);
 }
 
 static BOOL ZyArgsAreObjects(Class cls, SEL sel, NSUInteger declaredArgs) {
@@ -101,7 +111,7 @@ static BOOL ZyArgsAreObjects(Class cls, SEL sel, NSUInteger declaredArgs) {
     p = ZySkipOneType(p); // self
     p = ZySkipOneType(p); // _cmd
     for (NSUInteger i = 0; i < declaredArgs; i++) {
-        const char *q = ZySkipTypeQualifiers(p);
+        const char *q = ZySkipTypeQualifiers(ZySkipDigits(p));
         if (*q != '@' && *q != '#') {
             ZYNC_LOG(@"skip %s -[%s] non-object arg in %s", sel_getName(sel), class_getName(cls), enc);
             return NO;

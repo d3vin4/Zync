@@ -527,11 +527,173 @@ static NSString *ZyncCellText(UITableViewCell *cell) {
     return nil;
 }
 
-static UITableViewCell *ZyncFindAccountCell(UITableView *tv) {
+static BOOL ZyncTextContainsAccountTitle(NSString *text) {
+    if (!text || text.length == 0) return NO;
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) return NO;
+    NSString *lower = [trimmed lowercaseString];
+    for (NSString *known in ZyncKnownAccountTitleValues()) {
+        NSString *kTrimmed = [known stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (kTrimmed.length == 0) continue;
+        NSString *kLower = [kTrimmed lowercaseString];
+        if ([lower containsString:kLower]) return YES;
+    }
+    return NO;
+}
+
+static BOOL ZyncScanViewForAccountText(UIView *view, NSString **outClass, NSString **outText) {
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UILabel class]]) {
+            UILabel *label = (UILabel *)sub;
+            NSString *plain = label.text;
+            if (ZyncTextContainsAccountTitle(plain)) {
+                if (outClass) *outClass = NSStringFromClass(object_getClass(sub));
+                if (outText) *outText = plain;
+                return YES;
+            }
+            NSString *attr = label.attributedText.string;
+            if (ZyncTextContainsAccountTitle(attr)) {
+                if (outClass) *outClass = NSStringFromClass(object_getClass(sub));
+                if (outText) *outText = attr;
+                return YES;
+            }
+        } else if ([sub isKindOfClass:[UITextView class]]) {
+            UITextView *textView = (UITextView *)sub;
+            NSString *plain = textView.text;
+            if (ZyncTextContainsAccountTitle(plain)) {
+                if (outClass) *outClass = NSStringFromClass(object_getClass(sub));
+                if (outText) *outText = plain;
+                return YES;
+            }
+            NSString *attr = textView.attributedText.string;
+            if (ZyncTextContainsAccountTitle(attr)) {
+                if (outClass) *outClass = NSStringFromClass(object_getClass(sub));
+                if (outText) *outText = attr;
+                return YES;
+            }
+        }
+        if (ZyncScanViewForAccountText(sub, outClass, outText)) return YES;
+    }
+    return NO;
+}
+
+static void ZyncCollectViewTexts(UIView *view, NSMutableArray<NSString *> *out) {
+    for (UIView *sub in view.subviews) {
+        if ([sub isKindOfClass:[UILabel class]]) {
+            UILabel *label = (UILabel *)sub;
+            if (label.text && label.text.length > 0) [out addObject:label.text];
+            NSString *attr = label.attributedText.string;
+            if (attr && attr.length > 0 && ![out containsObject:attr]) [out addObject:attr];
+        } else if ([sub isKindOfClass:[UITextView class]]) {
+            UITextView *textView = (UITextView *)sub;
+            if (textView.text && textView.text.length > 0) [out addObject:textView.text];
+            NSString *attr = textView.attributedText.string;
+            if (attr && attr.length > 0 && ![out containsObject:attr]) [out addObject:attr];
+        }
+        ZyncCollectViewTexts(sub, out);
+    }
+}
+
+static void ZyncDumpVisibleCellsOnce(UITableView *tv) {
+    static BOOL dumped = NO;
+    if (dumped) return;
+    dumped = YES;
+    for (UITableViewCell *cell in tv.visibleCells) {
+        NSString *clsName = NSStringFromClass(object_getClass(cell));
+        NSMutableArray<NSString *> *texts = [NSMutableArray array];
+        NSString *plain = ZyncCellText(cell);
+        if (plain && plain.length > 0) [texts addObject:plain];
+        ZyncCollectViewTexts(cell, texts);
+        NSString *joined = texts.count > 0 ? [texts componentsJoinedByString:@" | "] : @"";
+        if (joined.length > 0) {
+            ZYNC_LOG(@"ensure: overlay dump cell %@ text=%@", clsName, joined);
+        } else {
+            ZYNC_LOG(@"ensure: overlay dump cell %@", clsName);
+        }
+    }
+}
+
+static UITableViewCell *ZyncFindModelAccountCell(UITableView *tv, id vc) {
+    if (!tv || !vc) return nil;
+    id accountObject = ZyncFetchAccountObject(vc);
+    if (!accountObject) return nil;
+    SEL arrangedSel = sel_registerName("getArrangedTableContent");
+    if (![vc respondsToSelector:arrangedSel]) return nil;
+    id arranged = nil;
+    @try { arranged = [vc performSelector:arrangedSel]; } @catch (__unused NSException *e) {}
+    if (!arranged || arranged == vc) return nil;
+    if (![arranged isKindOfClass:[NSArray class]]) return nil;
+    NSArray *sections = arranged;
+    NSIndexPath *foundPath = nil;
+    for (NSUInteger s = 0; s < sections.count && !foundPath; s++) {
+        id section = sections[s];
+        if ([section isKindOfClass:[NSArray class]]) {
+            NSUInteger idx = [(NSArray *)section indexOfObjectIdenticalTo:accountObject];
+            if (idx != NSNotFound) foundPath = [NSIndexPath indexPathForRow:idx inSection:s];
+            continue;
+        }
+        for (NSString *key in @[@"rows", @"items", @"cellObjects", @"objects"]) {
+            NSArray *rows = nil;
+            @try {
+                id value = [(id)section valueForKey:key];
+                if ([value isKindOfClass:[NSArray class]]) rows = value;
+            } @catch (__unused NSException *e) {}
+            if (rows) {
+                NSUInteger idx = [rows indexOfObjectIdenticalTo:accountObject];
+                if (idx != NSNotFound) {
+                    foundPath = [NSIndexPath indexPathForRow:idx inSection:s];
+                    break;
+                }
+            }
+        }
+        if (foundPath) continue;
+        NSMutableArray<ZyncBFSNode *> *nodes = ZyncCollectCandidates(section, 4);
+        for (ZyncBFSNode *entry in nodes) {
+            id node = entry.node;
+            if (![node isKindOfClass:[NSArray class]]) continue;
+            NSUInteger idx = [(NSArray *)node indexOfObjectIdenticalTo:accountObject];
+            if (idx != NSNotFound) {
+                foundPath = [NSIndexPath indexPathForRow:idx inSection:s];
+                break;
+            }
+        }
+    }
+    if (!foundPath) return nil;
+    if (foundPath.section >= (NSInteger)[tv numberOfSections] ||
+        foundPath.row >= (NSInteger)[tv numberOfRowsInSection:foundPath.section]) {
+        ZYNC_LOG(@"ensure: overlay model anchor %@ -> cell nil", foundPath);
+        return nil;
+    }
+    UITableViewCell *cell = nil;
+    @try { cell = [tv cellForRowAtIndexPath:foundPath]; } @catch (__unused NSException *e) {}
+    ZYNC_LOG(@"ensure: overlay model anchor %@ -> cell %@",
+             foundPath, cell ? NSStringFromClass(object_getClass(cell)) : @"nil");
+    return cell;
+}
+
+static UITableViewCell *ZyncFindAccountCell(UITableView *tv, id vc) {
     if (!tv) return nil;
     for (UITableViewCell *cell in tv.visibleCells) {
-        if (ZyncTextMatchesAccount(ZyncCellText(cell))) return cell;
+        NSString *cellText = ZyncCellText(cell);
+        if (ZyncTextMatchesAccount(cellText)) {
+            ZYNC_LOG(@"ensure: overlay tier1 account cell %@ text=%@",
+                     NSStringFromClass(object_getClass(cell)), cellText);
+            return cell;
+        }
     }
+    UITableViewCell *modelCell = ZyncFindModelAccountCell(tv, vc);
+    if (modelCell) return modelCell;
+    for (UITableViewCell *cell in tv.visibleCells) {
+        NSString *matchedClass = nil;
+        NSString *matchedText = nil;
+        if (ZyncScanViewForAccountText(cell, &matchedClass, &matchedText)) {
+            ZYNC_LOG(@"ensure: overlay tier2 account cell %@ text=%@ matched %@ text=%@",
+                     NSStringFromClass(object_getClass(cell)), ZyncCellText(cell) ? ZyncCellText(cell) : @"",
+                     matchedClass ? matchedClass : @"<nil>", matchedText ? matchedText : @"");
+            return cell;
+        }
+    }
+    ZyncDumpVisibleCellsOnce(tv);
     return nil;
 }
 
@@ -591,7 +753,7 @@ static UIView *ZyncBuildOverlayRow(UITableView *tv, UITableViewCell *accountCell
         id host = weakVC;
         UITableView *table = weakTV;
         if (host && table) {
-            UITableViewCell *cell = ZyncFindAccountCell(table);
+            UITableViewCell *cell = ZyncFindAccountCell(table, host);
             if (cell) {
                 NSIndexPath *path = [table indexPathForCell:cell];
                 if (path) [table deselectRowAtIndexPath:path animated:YES];
@@ -615,7 +777,7 @@ static void ZyncPresentOverlayRow(id vc) {
         ZYNC_LOG(@"ensure: overlay no tableView");
         return;
     }
-    UITableViewCell *accountCell = ZyncFindAccountCell(tv);
+    UITableViewCell *accountCell = ZyncFindAccountCell(tv, vc);
     if (!accountCell) {
         ZYNC_LOG(@"ensure: overlay awaiting account cell");
         ZyncScheduleRetry(vc);
@@ -640,7 +802,7 @@ static void ZyncUpdateOverlay(id vc) {
     UIView *host = tv.superview ?: tv;
     UIView *overlay = [host viewWithTag:kZyncOverlayTag];
     if (!overlay) return;
-    UITableViewCell *accountCell = ZyncFindAccountCell(tv);
+    UITableViewCell *accountCell = ZyncFindAccountCell(tv, vc);
     if (!accountCell) {
         overlay.hidden = YES;
         ZYNC_LOG(@"ensure: overlay awaiting account cell");
