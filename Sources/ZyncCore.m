@@ -135,8 +135,8 @@ static void ZyncScheduleBootAfterLaunch(void) {
         [[NSNotificationCenter defaultCenter]
             addObserverForName:UIApplicationDidFinishLaunchingNotification
                         object:nil
-                          queue:dispatch_get_main_queue()]
-                     usingBlock:^(NSNotification *note) {
+                         queue:dispatch_get_main_queue()
+                    usingBlock:^(NSNotification *note) {
                          (void)note;
                          ZYNC_LOG(@"boot: DidFinishLaunching notification received");
                          ZyncBootAsync();
